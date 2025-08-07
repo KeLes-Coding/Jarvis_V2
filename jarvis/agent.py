@@ -1,4 +1,4 @@
-# jarvis/agent.py
+# jarvis/agent.py (修正后)
 
 import logging
 import yaml
@@ -7,6 +7,9 @@ import time
 import os
 import json
 import io  # 用于处理二进制数据流
+
+# 新增：从datetime模块导入timezone和timedelta以处理时区
+from datetime import timezone, timedelta
 
 # 导入Pillow库，如果失败则优雅降级
 try:
@@ -27,7 +30,13 @@ class JarvisAgent:
     JarvisAgent是系统的核心，负责编排“观察-思考-行动-记录”的完整循环。
     """
 
-    def __init__(self, config: dict, device_serial: str, info_pool: InfoPoolManager):
+    def __init__(
+        self,
+        config: dict,
+        device_serial: str,
+        info_pool: InfoPoolManager,
+        run_start_time: datetime.datetime,  # 接收带时区的开始时间
+    ):
         """
         初始化Agent的所有组件。
 
@@ -35,11 +44,13 @@ class JarvisAgent:
             config: 从config.yaml加载的配置字典。
             device_serial: 当前Agent负责的设备序列号。
             info_pool: 用于记录轨迹的InfoPoolManager实例。
+            run_start_time: 本次任务运行的开始时间 (带时区)。
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.config = config
         self.device_serial = device_serial
         self.info_pool = info_pool
+        self.run_start_time = run_start_time  # 保存任务开始时间
 
         # 初始化三大核心模块
         adb_path = config.get("adb", {}).get("executable_path", "adb")
@@ -234,7 +245,10 @@ class JarvisAgent:
             # 5. 记录
             step_log = {
                 "step_id": i,
-                "timestamp_utc": datetime.datetime.utcnow().isoformat(),
+                # --- 修正点: 使用与任务开始时相同的时区记录步骤时间 ---
+                "timestamp": datetime.datetime.now(
+                    self.run_start_time.tzinfo
+                ).isoformat(),
                 "overall_task": task,
                 "observation": {
                     "simplified_elements_str": simplified_ui,
@@ -261,7 +275,12 @@ class JarvisAgent:
             )
             time.sleep(1)
 
-        self.info_pool.finalize_run(final_status, final_summary)
+        self.info_pool.finalize_run(
+            status=final_status,
+            summary=final_summary,
+            run_start_time=self.run_start_time,
+            task=task,
+        )
 
 
 def agent_worker(device_serial: str, task: str):
@@ -269,9 +288,14 @@ def agent_worker(device_serial: str, task: str):
     Agent的工作函数，由主进程 (agent_manager.py) 为每个设备调用。
     负责为一次任务运行设置好所有环境。
     """
+    # 定义北京时区 (UTC+8)
+    beijing_tz = timezone(timedelta(hours=8))
+    # 使用北京时区获取当前时间作为任务开始时间
+    run_start_time = datetime.datetime.now(beijing_tz)
+
     # 1. 生成本次运行的唯一目录
     safe_task_name = "".join(c for c in task if c.isalnum() or c in " _-").rstrip()[:50]
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = run_start_time.strftime("%Y%m%d_%H%M%S")  # 使用带时区的时间
     run_path = os.path.join(
         "jarvis", "runs", f"{timestamp}_{safe_task_name}_{device_serial}"
     )
@@ -296,13 +320,17 @@ def agent_worker(device_serial: str, task: str):
     logger.info(f"Agent Worker已为设备 {device_serial} 启动。")
     logger.info(f"所有日志和产出将保存在: {run_path}")
 
+    info_pool = None
     try:
         # 4. 初始化信息池
         info_pool = InfoPoolManager(run_directory=run_path)
 
         # 5. 实例化并运行Agent
         agent = JarvisAgent(
-            config=config, device_serial=device_serial, info_pool=info_pool
+            config=config,
+            device_serial=device_serial,
+            info_pool=info_pool,
+            run_start_time=run_start_time,  # 传递带时区的开始时间
         )
         agent.run(task=task)
 
@@ -310,7 +338,12 @@ def agent_worker(device_serial: str, task: str):
         # 捕获初始化阶段（如LLMClient认证失败）的严重错误
         logger.critical(f"Agent Worker 初始化或运行时遇到致命错误: {e}", exc_info=True)
         # 尝试在出错时也能finalize run
-        if "info_pool" in locals():
-            info_pool.finalize_run("CRITICAL_FAILURE", f"Agent因异常中断: {e}")
+        if info_pool:
+            info_pool.finalize_run(
+                status="CRITICAL_FAILURE",
+                summary=f"Agent因异常中断: {e}",
+                run_start_time=run_start_time,
+                task=task,
+            )
 
     logger.info(f"Agent Worker 已完成在设备 {device_serial} 上的任务。")

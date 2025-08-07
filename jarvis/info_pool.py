@@ -1,4 +1,4 @@
-# jarvis/info_pool.py (最终版)
+# jarvis/info_pool.py (修正后)
 
 import os
 import json
@@ -98,15 +98,27 @@ class InfoPoolManager:
         # --- 将本步骤信息追加到完整轨迹中 ---
         self.full_trace.append(trace_step_data)
 
-    def finalize_run(self, status: str, summary: str):
+    def finalize_run(
+        self,
+        status: str,
+        summary: str,
+        run_start_time: datetime.datetime,  # 这个是带时区的时间
+        task: str,
+    ):
         """
         在任务结束时写入总结文件和完整的执行轨迹文件。
         """
-        run_end_time = datetime.datetime.utcnow().isoformat()
+        # --- 修正点：确保 run_end_time 与 run_start_time 的时区一致 ---
+        # 使用 run_start_time 的时区信息来获取当前的结束时间，从而确保两者都是 offset-aware
+        run_end_time = datetime.datetime.now(run_start_time.tzinfo)
+        duration = run_end_time - run_start_time
 
         # 1. 写入包含最终状态和摘要的 summary.json 文件
         summary_data = {
-            "run_end_utc": run_end_time,
+            "run_start_time": run_start_time.isoformat(),
+            "run_end_time": run_end_time.isoformat(),
+            "duration_seconds": round(duration.total_seconds(), 2),
+            "task_description": task,
             "final_status": status,
             "total_steps": self.step_count,
             "summary_text": summary,

@@ -1,4 +1,4 @@
-# jarvis/modules/observer.py (最终版，包含坐标和可点击属性)
+# jarvis/modules/observer.py (优化后)
 
 import subprocess
 import logging
@@ -15,14 +15,17 @@ class Observer:
         self.adb_path = adb_path
         self.device_serial = device_serial
         self.local_temp_path = f"temp_{self.device_serial}_{int(time.time() * 1000)}"
+        # --- 新增：初始化时获取屏幕尺寸 ---
+        self.screen_width, self.screen_height = self._get_device_dimensions()
 
-    def _execute_adb_command(self, command: list[str], timeout: int = 20) -> bool:
-        # ... 此方法无需修改 ...
+    def _execute_adb_command(
+        self, command: list[str], timeout: int = 20, check_output: bool = False
+    ) -> str | bool:
         base_cmd = [self.adb_path, "-s", self.device_serial]
         full_command = base_cmd + command
         self.logger.debug(f"执行ADB命令: {' '.join(full_command)}")
         try:
-            subprocess.run(
+            result = subprocess.run(
                 full_command,
                 check=True,
                 timeout=timeout,
@@ -30,18 +33,34 @@ class Observer:
                 text=True,
                 encoding="utf-8",
             )
-            return True
+            return result.stdout.strip() if check_output else True
         except subprocess.TimeoutExpired:
             self.logger.error(f"ADB命令超时: {' '.join(full_command)}")
-            return False
+            return "" if check_output else False
         except subprocess.CalledProcessError as e:
             self.logger.error(
                 f"ADB命令执行失败: {' '.join(full_command)}\nStderr: {e.stderr.strip()}"
             )
-            return False
+            return "" if check_output else False
         except Exception as e:
             self.logger.error(f"执行ADB命令时发生未知错误: {e}")
-            return False
+            return "" if check_output else False
+
+    # --- 新增：获取设备物理屏幕尺寸的方法 ---
+    def _get_device_dimensions(self) -> Tuple[int, int]:
+        """获取设备的物理显示尺寸 (width, height)。"""
+        self.logger.info("正在获取设备屏幕尺寸...")
+        # 命令 'wm size' 的输出通常是 "Physical size: 1080x1920"
+        output = self._execute_adb_command(["shell", "wm", "size"], check_output=True)
+        if output and isinstance(output, str):
+            match = re.search(r"(\d+)x(\d+)", output)
+            if match:
+                width, height = int(match.group(1)), int(match.group(2))
+                self.logger.info(f"获取到设备尺寸: {width}x{height}")
+                return width, height
+
+        self.logger.warning("无法获取设备尺寸，将使用默认值 1080x1920。")
+        return 1080, 1920  # 返回一个通用的默认值以防万一
 
     def get_screenshot_bytes(self) -> bytes | None:
         # ... 此方法无需修改 ...
@@ -97,8 +116,25 @@ class Observer:
             return False
         return is_interactive or has_text
 
+    # --- 新增：判断元素是否在视口内的方法 ---
+    def _is_node_in_viewport(self, node: ET.Element) -> bool:
+        """检查一个元素是否至少部分在屏幕视口内。"""
+        bounds_str = node.get("bounds")
+        if not bounds_str:
+            return False
+
+        x1, y1, x2, y2 = self._parse_bounds(bounds_str)
+
+        # 检查元素是否与屏幕边界相交
+        # 元素可见的条件是：它的底部在屏幕顶部之下，顶部在屏幕底部之上，
+        # 并且它的右侧在屏幕左侧之后，左侧在屏幕右侧之前。
+        is_vertically_visible = y1 < self.screen_height and y2 > 0
+        is_horizontally_visible = x1 < self.screen_width and x2 > 0
+
+        return is_vertically_visible and is_horizontally_visible
+
     def _parse_and_simplify_xml(self, xml_content: str) -> List[Dict[str, Any]]:
-        # --- 此方法无需修改，它已经提取了我们需要的所有信息 ---
+        # --- 此方法已修改，加入了视口检查和文本截断 ---
         simplified_elements = []
         if not xml_content:
             return simplified_elements
@@ -106,14 +142,28 @@ class Observer:
             root = ET.fromstring(xml_content)
             uid_counter = 1
             for node in root.iter():
+                # --- 修改点 1：首先检查元素是否在视口内 ---
+                if not self._is_node_in_viewport(node):
+                    continue
+
                 if self._is_element_actionable(node):
                     bounds_str = node.get("bounds")
                     bounds = self._parse_bounds(bounds_str)
+
+                    # --- 修改点 2：截断过长的文本 ---
+                    text = node.get("text", "")
+                    if len(text) > 200:
+                        text = text[:200] + "..."
+
+                    content_desc = node.get("content-desc", "")
+                    if len(content_desc) > 200:
+                        content_desc = content_desc[:200] + "..."
+
                     element_data = {
                         "uid": uid_counter,
                         "class": node.get("class"),
-                        "text": node.get("text", ""),
-                        "content_desc": node.get("content-desc", ""),
+                        "text": text,  # 使用可能被截断的文本
+                        "content_desc": content_desc,  # 使用可能被截断的文本
                         "resource_id": node.get("resource-id", ""),
                         "bounds": bounds,
                         "center": (
@@ -134,26 +184,23 @@ class Observer:
             )
         return simplified_elements
 
-    # --- 唯一的修改点：get_current_observation ---
     def get_current_observation(self) -> dict:
-        """获取并格式化观察数据，格式化字符串时【新增】坐标和可点击属性。"""
+        # --- 此方法无需修改，它会使用上面优化后的 _parse_and_simplify_xml ---
         self.logger.info("正在获取当前设备观察数据...")
         screenshot = self.get_screenshot_bytes()
         xml = self.get_layout_xml()
 
+        # 调用的是优化后的解析方法
         simplified_elements = self._parse_and_simplify_xml(xml)
 
         simplified_elements_str = ""
         for el in simplified_elements:
             all_parts = []
-
-            # 1. 身份信息
             text_info = f"text='{el['text']}'" if el["text"] else ""
             desc_info = f"desc='{el['content_desc']}'" if el["content_desc"] else ""
             id_info = f"id='{el['resource_id']}'" if el["resource_id"] else ""
             all_parts.extend([part for part in [text_info, desc_info, id_info] if part])
 
-            # 2. 状态信息
             if el.get("password"):
                 all_parts.append("is_password")
             if el.get("checkable"):
@@ -161,17 +208,13 @@ class Observer:
                 all_parts.append("checked" if el.get("checked") else "unchecked")
             if el.get("selected"):
                 all_parts.append("selected")
-
-            # 3. --- 新增：行为和空间信息 ---
             if el.get("clickable"):
                 all_parts.append("clickable")
 
             b = el.get("bounds")
             if b:
-                # 格式化bounds使其更易读
                 all_parts.append(f"bounds=[{b[0]},{b[1]}][{b[2]},{b[3]}]")
 
-            # 最终拼接
             simplified_elements_str += f"[{el['uid']}] {el['class'].split('.')[-1]} {{{', '.join(all_parts)}}}\n"
 
         return {
