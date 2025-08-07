@@ -1,0 +1,60 @@
+# 安卓调试桥 (ADB) 相关配置
+adb:
+  executable_path: "adb"
+
+# 日志系统配置
+logging:
+  # 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "DEBUG"
+  # 日志格式
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# 代理配置
+proxy:
+  # 是否启用代理。如果为 false 或此部分被注释，则不使用代理。
+  enabled: false
+  # 代理服务器地址。
+  server: "http://127.0.0.1:7890"
+
+# Agent行为配置
+agent:
+  # Agent执行任务的最大步骤数。超过此数值将自动停止。
+  max_steps: 15
+
+  # 图片压缩配置
+  image_compression:
+    # 是否启用截图压缩。 true: 启用, false: 关闭
+    enabled: true
+    # 缩放因子。0.5 表示将图片的宽度和高度都缩放到原来的50%。
+    scale_factor: 0.5
+
+# 大型语言模型 (LLM) 配置
+llm:
+  # 可选 'openai', 'gemini', or 'claude'
+  api_mode: "openai"
+
+  providers:
+    openai:
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      # !!! 在下方填入你的 API Key !!!
+      api_key: ""
+      model: "qwen3-coder-plus"
+      timeout: 120
+      # 此模型是否为视觉语言模型 (VLM)
+      is_vlm: true
+
+    gemini:
+      # !!! 在下方填入你的 API Key !!!
+      api_key: ""
+      model: "gemini-1.5-pro-latest"
+      timeout: 120
+      # 此模型是否为视觉语言模型 (VLM)
+      is_vlm: true
+
+    claude:
+      # !!! 在下方填入你的 API Key !!!
+      api_key: ""
+      model: "claude-3-opus-20240229"
+      timeout: 120
+      # 此模型是否为视觉语言模型 (VLM)
+      is_vlm: true
