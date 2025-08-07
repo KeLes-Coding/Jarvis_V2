@@ -1,4 +1,4 @@
-# Jarvis - AI 安卓设备操控Agent
+# Jarvis - LLM 驱动的安卓设备操控Agent
 
 Jarvis 是一个由大型语言模型（LLM）驱动的 AI Agent，旨在通过模仿人类用户的交互方式来操作安卓设备，以完成指定的高级任务。
 
@@ -27,7 +27,7 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
 1.  **克隆代码库**:
 
     ```bash
-    git clone <your-repo-url>
+    git clone https://github.com/KeLes-Coding/Jarvis_V2.git
     cd Jarvis_V2
     ```
 
