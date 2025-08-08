@@ -32,8 +32,6 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
     ```
 
 2.  **安装依赖**:
-    项目依赖于 `requirements.txt` 中列出的包。此外，根据您选择的 LLM 提供商，还需要安装相应的库。
-
     ```bash
     pip install -r requirements.txt
     ```
@@ -41,19 +39,7 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
     根据 `config.template.yaml` 和代码中的动态导入，您可能还需要安装：
 
     ```bash
-    # 用于图片压缩
-    pip install Pillow
-
-    # 如果使用 OpenAI API
-    pip install openai httpx
-
-    # 如果使用 Google Gemini API
-    pip install google-generativeai
-
-    # 如果使用 Anthropic Claude API
-    pip install anthropic httpx
-    ```
-
+    
 3.  **安卓调试桥 (ADB)**:
     确保您已经安装了 Android SDK Platform-Tools，并且 `adb` 命令在您的系统路径 (PATH) 中。您可以通过运行 `adb devices` 来验证。
 
