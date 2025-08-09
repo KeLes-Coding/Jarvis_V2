@@ -1,5 +1,3 @@
-# jarvis/agent.py (修正后)
-
 import logging
 import yaml
 import datetime

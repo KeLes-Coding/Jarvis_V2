@@ -1,5 +1,3 @@
-# jarvis/modules/observer.py (优化后)
-
 import subprocess
 import logging
 import re
@@ -201,19 +199,19 @@ class Observer:
             id_info = f"id='{el['resource_id']}'" if el["resource_id"] else ""
             all_parts.extend([part for part in [text_info, desc_info, id_info] if part])
 
-            if el.get("password"):
-                all_parts.append("is_password")
-            if el.get("checkable"):
-                all_parts.append("checkable")
-                all_parts.append("checked" if el.get("checked") else "unchecked")
-            if el.get("selected"):
-                all_parts.append("selected")
-            if el.get("clickable"):
-                all_parts.append("clickable")
+            # if el.get("password"):
+            #     all_parts.append("is_password")
+            # if el.get("checkable"):
+            #     all_parts.append("checkable")
+            #     all_parts.append("checked" if el.get("checked") else "unchecked")
+            # if el.get("selected"):
+            #     all_parts.append("selected")
+            # if el.get("clickable"):
+            #     all_parts.append("clickable")
 
-            b = el.get("bounds")
-            if b:
-                all_parts.append(f"bounds=[{b[0]},{b[1]}][{b[2]},{b[3]}]")
+            # b = el.get("bounds")
+            # if b:
+            #     all_parts.append(f"bounds=[{b[0]},{b[1]}][{b[2]},{b[3]}]")
 
             simplified_elements_str += f"[{el['uid']}] {el['class'].split('.')[-1]} {{{', '.join(all_parts)}}}\n"
 

@@ -1,5 +1,3 @@
-# jarvis/modules/actuator.py (修改后)
-
 import subprocess
 import logging
 import time

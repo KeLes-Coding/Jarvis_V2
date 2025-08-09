@@ -1,5 +1,3 @@
-# jarvis/info_pool.py (修正后)
-
 import os
 import json
 import datetime

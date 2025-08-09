@@ -86,8 +86,8 @@ def main():
         process = multiprocessing.Process(
             target=agent_worker,
             # args=(device, "打开计算器，计算123乘以456，告诉我答案是多少"),
-            args=(device, "打开维基百科，搜索周杰伦，告诉我他2000年发布的专辑是什么。"),
-            # args=(device, "滑动屏幕。"),
+            # args=(device, "打开维基百科，搜索周杰伦，告诉我他2000年发布的专辑是什么。"),
+            args=(device, "滑动屏幕。"),
         )
         processes.append(process)
         process.start()  # 启动进程
