@@ -8,7 +8,18 @@ from typing import List, Dict, Any, Tuple
 
 
 class Observer:
+    """
+    Observer（观察者）模块负责从安卓设备获取信息。
+    它通过ADB命令获取屏幕截图和UI布局（XML），并将其解析为Agent可以理解的格式。
+    """
+
     def __init__(self, adb_path: str, device_serial: str):
+        """
+        初始化观察者。
+        Args:
+            adb_path: ADB可执行文件的路径。
+            device_serial: 目标设备的序列号。
+        """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.adb_path = adb_path
         self.device_serial = device_serial
@@ -19,6 +30,7 @@ class Observer:
     def _execute_adb_command(
         self, command: list[str], timeout: int = 20, check_output: bool = False
     ) -> str | bool:
+        """执行ADB命令的辅助函数。"""
         base_cmd = [self.adb_path, "-s", self.device_serial]
         full_command = base_cmd + command
         self.logger.debug(f"执行ADB命令: {' '.join(full_command)}")
@@ -61,7 +73,7 @@ class Observer:
         return 1080, 1920  # 返回一个通用的默认值以防万一
 
     def get_screenshot_bytes(self) -> bytes | None:
-        # ... 此方法无需修改 ...
+        """获取设备当前屏幕的截图，并以字节形式返回。"""
         remote_path = "/data/local/tmp/screenshot.png"
         local_path = f"{self.local_temp_path}_screen.png"
         try:
@@ -77,7 +89,7 @@ class Observer:
                 os.remove(local_path)
 
     def get_layout_xml(self) -> str | None:
-        # ... 此方法无需修改 ...
+        """获取设备当前UI布局的XML文件内容。"""
         remote_path = "/data/local/tmp/uidump.xml"
         local_path = f"{self.local_temp_path}_uidump.xml"
         try:
@@ -95,14 +107,14 @@ class Observer:
                 os.remove(local_path)
 
     def _parse_bounds(self, bounds_str: str) -> Tuple[int, int, int, int]:
-        # ... 此方法无需修改 ...
+        """从字符串（如"[0,100][200,300]"）中解析出边界坐标。"""
         coords = [int(n) for n in re.findall(r"\d+", bounds_str)]
         if len(coords) == 4:
             return coords[0], coords[1], coords[2], coords[3]
         return 0, 0, 0, 0
 
     def _is_element_actionable(self, node: ET.Element) -> bool:
-        # ... 此方法无需修改 ...
+        """判断一个XML节点（UI元素）是否是可交互的。"""
         is_interactive = (
             node.get("clickable") == "true"
             or node.get("long-clickable") == "true"
@@ -132,7 +144,11 @@ class Observer:
         return is_vertically_visible and is_horizontally_visible
 
     def _parse_and_simplify_xml(self, xml_content: str) -> List[Dict[str, Any]]:
-        # --- 此方法已修改，加入了视口检查和文本截断 ---
+        """
+        解析XML内容，提取可交互的UI元素，并进行简化。
+        - 过滤掉视口外的元素。
+        - 截断过长的文本。
+        """
         simplified_elements = []
         if not xml_content:
             return simplified_elements
@@ -183,7 +199,9 @@ class Observer:
         return simplified_elements
 
     def get_current_observation(self) -> dict:
-        # --- 此方法无需修改，它会使用上面优化后的 _parse_and_simplify_xml ---
+        """
+        获取当前的完整观察数据，包括截图、XML和简化后的UI元素列表。
+        """
         self.logger.info("正在获取当前设备观察数据...")
         screenshot = self.get_screenshot_bytes()
         xml = self.get_layout_xml()

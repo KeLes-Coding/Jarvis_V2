@@ -1,5 +1,3 @@
-# jarvis/llm/client.py (v1.2 - 支持代理)
-
 import base64
 import logging
 import os
@@ -27,6 +25,11 @@ from . import prompts
 
 
 class LLMClient:
+    """
+    LLMClient负责与不同的大型语言模型服务进行交互。
+    支持多种LLM提供商（如OpenAI, Gemini, Claude），并能处理代理设置。
+    """
+
     def __init__(self, config: Dict[str, Any], proxy_config: Dict[str, Any] = None):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.config = config
@@ -90,7 +93,7 @@ class LLMClient:
         )
 
     def _prepare_image_payload(self, image_bytes: bytes) -> Dict[str, Any]:
-        # ... 此方法无需修改 ...
+        """将图片字节转换为不同LLM提供商所需的格式。"""
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
         media_type = "image/png"
         if self.api_mode == "openai":
@@ -112,7 +115,12 @@ class LLMClient:
         return {}
 
     def query(self, text_prompt: str, images: List[bytes] = None) -> Dict[str, Any]:
-        # ... 此方法无需修改 ...
+        """
+        向LLM发送查询请求。
+        - 整合文本和图片（如果支持VLM）。
+        - 调用相应SDK的API。
+        - 解析并返回LLM的响应。
+        """
         self.logger.info("Querying LLM...")
         images = images or []
         content = [{"type": "text", "text": text_prompt}]

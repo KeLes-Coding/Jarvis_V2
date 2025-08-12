@@ -5,8 +5,18 @@ from typing import List, Dict, Any
 
 
 class Actuator:
+    """
+    Actuator（执行器）模块负责将Agent决策出的抽象动作（如 tap, swipe）
+    转换为具体的ADB命令，并在安卓设备上执行这些命令。
+    """
+
     def __init__(self, adb_path: str, device_serial: str):
-        # ... __init__ 和 _execute_adb_command 无需修改 ...
+        """
+        初始化执行器。
+        Args:
+            adb_path: ADB可执行文件的路径。
+            device_serial: 目标设备的序列号。
+        """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.adb_path = adb_path
         self.device_serial = device_serial
