@@ -31,13 +31,13 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
 ## 安装指南
 
 1.  **克隆代码库**:
-    ```bash
-    git clone [https://github.com/KeLes-Coding/Jarvis_V2.git](https://github.com/KeLes-Coding/Jarvis_V2.git)
+    ```
+    git clone https://github.com/KeLes-Coding/Jarvis_V2.git
     cd Jarvis_V2
     ```
 
 2.  **安装依赖**:
-    ```bash
+    ```
     pip install -r requirements.txt
     ```
 
@@ -50,7 +50,7 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
 
 1.  **创建配置文件**:
     复制 `config.template.yaml` 并将其重命名为 `config.yaml`。
-    ```bash
+    ```
     cp config.template.yaml config.yaml
     ```
 
@@ -75,7 +75,7 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
 
 2.  **定义任务**:
     打开 `config.yaml` 文件，在 `main` 部分下的 `tasks` 列表中定义一个或多个任务。Agent Manager 会将这些任务依次分配给所有可用的设备。
-    ```yaml
+    ```
     # config.yaml
     
     main:
@@ -92,7 +92,7 @@ Jarvis V2 的核心是一个“观察-思考-行动”的循环：
 
 3.  **启动代理**:
     运行 `agent_manager.py`。程序会自动检测所有连接的设备，并为每台设备分配一个代理来执行任务。
-    ```bash
+    ```
     python agent_manager.py
     ```
 
