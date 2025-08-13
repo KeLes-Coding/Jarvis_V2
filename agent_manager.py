@@ -1,20 +1,24 @@
-# agent_manager.py (修改后)
+# agent_manager.py (Refactored V3)
 
 import subprocess
 import multiprocessing
 import time
 import os
 import yaml
-from abc import ABC, abstractmethod
 import logging
+import platform
+import sys
 from typing import List, Dict, Any
 
 # 导入现有的 agent_worker
 from jarvis.agent import agent_worker
 
-# 设置一个基础的日志记录器，以便在加载完整配置前就能看到日志
+# --- 全局基础日志配置 ---
+# 为管理器设置一个独特的日志格式，以便与Agent的日志区分开
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s - [Manager] - %(levelname)s - %(message)s",
+    force=True,  # 强制覆盖任何现有配置
 )
 
 
@@ -36,119 +40,88 @@ def run_adb_command(command: list[str], timeout: int = 20) -> str:
         return ""
 
 
-class DeviceProvider(ABC):
+def get_available_devices(config: Dict[str, Any]) -> List[str]:
     """
-    设备提供者的抽象基类。
-    每个子类负责通过一种特定的方式发现并提供安卓设备列表。
+    发现所有来源（本地、远程、隧道）的可用设备并返回唯一的设备序列号列表。
     """
+    adb_path = config.get("adb", {}).get("executable_path", "adb")
+    all_devices = []
+    provider_configs = config.get("main", {}).get("device_providers", {})
 
-    def __init__(self, config: Dict[str, Any]):
-        self.config = config
-        self.adb_path = config.get("adb", {}).get("executable_path", "adb")
-
-    @abstractmethod
-    def get_devices(self) -> List[str]:
-        """
-        发现并返回一个设备序列号列表。
-        对于远程设备，序列号通常是 'ip:port' 的格式。
-        """
-        pass
-
-
-class LocalDeviceProvider(DeviceProvider):
-    """通过本地 'adb devices' 命令发现设备。"""
-
-    def get_devices(self) -> List[str]:
+    # 1. 本地设备
+    if provider_configs.get("local", {}).get("enabled"):
         logging.info("正在从 [本地] 发现设备...")
-        command = [self.adb_path, "devices"]
-        output = run_adb_command(command)
-        if not output:
-            return []
+        output = run_adb_command([adb_path, "devices"])
+        if output:
+            lines = output.strip().split("\n")
+            for line in lines[1:]:
+                if "\tdevice" in line:
+                    all_devices.append(line.split("\t")[0])
 
-        devices = []
-        lines = output.strip().split("\n")
-        for line in lines[1:]:
-            if "\tdevice" in line:
-                serial_number = line.split("\t")[0]
-                devices.append(serial_number)
-                logging.info(f"  [本地] 发现设备: {serial_number}")
-        return devices
+    # 2. 远程IP设备
+    remote_ip_config = provider_configs.get("remote_ip", {})
+    if remote_ip_config.get("enabled"):
+        for remote in remote_ip_config.get("remotes", []):
+            host = remote.get("host")
+            if host:
+                logging.info(f"正在连接到远程主机: {host}...")
+                connect_output = run_adb_command([adb_path, "connect", host])
+                if (
+                    "connected" in connect_output
+                    or "already connected" in connect_output
+                ):
+                    all_devices.append(host)
 
+    # 3. SSH反向隧道设备
+    ssh_tunnel_config = provider_configs.get("ssh_reverse_tunnel", {})
+    if ssh_tunnel_config.get("enabled"):
+        for tunnel in ssh_tunnel_config.get("ssh_reverse_tunnels", []):
+            port = tunnel.get("local_port")
+            if port:
+                address = f"localhost:{port}"
+                logging.info(f"正在尝试通过隧道连接设备: {address}")
+                connect_output = run_adb_command([adb_path, "connect", address])
+                if (
+                    "connected" in connect_output
+                    or "already connected" in connect_output
+                ):
+                    all_devices.append(address)
 
-class RemoteIpDeviceProvider(DeviceProvider):
-    """通过 'adb connect' 连接到公网/局域网IP的设备。"""
-
-    def get_devices(self) -> List[str]:
-        remote_hosts = self.config.get("remotes", [])
-        if not remote_hosts:
-            return []
-
-        logging.info("正在从 [远程IP] 发现设备...")
-        all_remote_devices = []
-        for host_info in remote_hosts:
-            host = host_info.get("host")
-            if not host:
-                continue
-
-            logging.info(f"  正在连接到远程主机: {host}...")
-            # 1. 连接设备
-            connect_command = [self.adb_path, "connect", host]
-            connect_output = run_adb_command(connect_command)
-            if "connected" in connect_output or "already connected" in connect_output:
-                logging.info(f"  成功连接到 {host}")
-                # 连接成功后，该设备会出现在 `adb devices` 列表中，其序列号就是 host
-                all_remote_devices.append(host)
-            else:
-                logging.error(f"  无法连接到 {host}。请检查网络和ADB配置。")
-
-        return all_remote_devices
+    unique_devices = sorted(list(set(all_devices)))
+    logging.info(f"发现 {len(unique_devices)} 台唯一可用设备: {unique_devices}")
+    return unique_devices
 
 
-class SshReverseTunnelDeviceProvider(DeviceProvider):
+def agent_process_wrapper(
+    device_serial: str, task: str, device_status_dict: Dict[str, str]
+):
     """
-    处理通过SSH反向隧道连接的设备。
-
-    此提供者假设您（用户）已经手动建立了从服务器2到服务器1的反向SSH隧道。
-    例如，在服务器2上运行了类似这样的命令:
-    ssh -R 5038:localhost:5037 -N -f user@server1_ip
-
-    这条命令会将服务器1上的5038端口的流量转发到服务器2的本地ADB服务端口（默认为5037）。
-    我们只需要在配置中告诉Agent，服务器1的哪个本地端口对应一个隧道设备即可。
+    这是 Agent 工作进程的包装器。
+    它的核心职责是：在调用真正的 agent_worker 前后，正确地更新共享的设备状态。
     """
+    try:
+        # 1. 在任务开始前，立刻将设备状态标记为 'busy'
+        device_status_dict[device_serial] = "busy"
+        logging.info(f"设备 [{device_serial}] 已锁定，开始执行任务: '{task[:50]}...'")
 
-    def get_devices(self) -> List[str]:
-        tunnels = self.config.get("ssh_reverse_tunnels", [])
-        if not tunnels:
-            return []
+        # 2. 调用真正的 Agent 工作函数
+        # 注意：agent_worker内部已经有完整的日志和异常处理
+        agent_worker(device_serial, task)
 
-        logging.info("正在从 [SSH反向隧道] 发现设备...")
-        connected_devices = []
-        for tunnel in tunnels:
-            local_port = tunnel.get("local_port")
-            if not local_port:
-                continue
-
-            # 设备地址就是服务器1的localhost加上指定的本地端口
-            device_address = f"localhost:{local_port}"
-            logging.info(f"  正在尝试通过隧道连接设备: {device_address}")
-
-            connect_command = [self.adb_path, "connect", device_address]
-            connect_output = run_adb_command(connect_command)
-
-            if "connected" in connect_output or "already connected" in connect_output:
-                logging.info(f"  成功通过隧道连接到 {device_address}")
-                connected_devices.append(device_address)
-            else:
-                logging.error(
-                    f"  无法通过隧道 {device_address} 连接设备。请确认SSH隧道已建立并且端口正确。"
-                )
-
-        return connected_devices
+    except Exception as e:
+        # 这是一个兜底的异常捕获，以防 agent_worker 本身在初始化阶段就崩溃
+        logging.error(
+            f"设备 [{device_serial}] 的 Agent 包装器捕获到致命错误: {e}", exc_info=True
+        )
+    finally:
+        # 3. 无论任务成功、失败还是崩溃，最后都必须将设备状态改回 'idle'
+        device_status_dict[device_serial] = "idle"
+        logging.info(f"设备 [{device_serial}] 已释放，任务 '{task[:50]}...' 结束。")
 
 
 def main():
     """
-    主函数，用于加载配置、发现设备、分配任务并启动Agent。
+    主函数，采用基于共享状态的调度策略来管理设备和任务。
     """
     # 1. 加载配置
     try:
@@ -162,77 +135,80 @@ def main():
 
     main_config = config.get("main", {})
     tasks = main_config.get("tasks", [])
+
     if not tasks:
-        logging.warning(
-            "任务列表为空，程序将不执行任何操作。请在 config.yaml 中定义任务。"
-        )
+        logging.warning("任务列表为空，程序将不执行任何操作。")
         return
 
-    # 2. 初始化设备提供者
-    providers = []
-    provider_configs = main_config.get("device_providers", {})
-    if provider_configs.get("local", {}).get("enabled"):
-        providers.append(LocalDeviceProvider(config))
-    if provider_configs.get("remote_ip", {}).get("enabled"):
-        providers.append(RemoteIpDeviceProvider(provider_configs.get("remote_ip")))
-    if provider_configs.get("ssh_reverse_tunnel", {}).get("enabled"):
-        providers.append(
-            SshReverseTunnelDeviceProvider(provider_configs.get("ssh_reverse_tunnel"))
-        )
-
-    # 3. 汇总所有可用设备
-    all_available_devices = []
-    for provider in providers:
-        all_available_devices.extend(provider.get_devices())
-
-    if not all_available_devices:
-        logging.error("未发现任何可用的安卓设备。请检查您的连接和配置。程序退出。")
+    all_devices = get_available_devices(config)
+    if not all_devices:
+        logging.error("未发现任何可用的安卓设备，程序退出。")
         return
 
-    # 去重
-    all_available_devices = sorted(list(set(all_available_devices)))
-
-    logging.info("-" * 30)
-    logging.info(f"任务调度开始！")
-    logging.info(
-        f"发现 {len(all_available_devices)} 台可用设备: {all_available_devices}"
-    )
+    logging.info("-" * 40)
+    logging.info("任务调度器 V3 已启动 (基于状态)")
     logging.info(f"共有 {len(tasks)} 个任务待执行。")
-    logging.info("-" * 30)
+    logging.info("-" * 40)
 
-    # 4. 创建工作队列 (设备, 任务)
-    # 简单轮询调度：将任务依次分配给设备
-    work_queue = []
-    for i, task in enumerate(tasks):
-        device = all_available_devices[i % len(all_available_devices)]
-        work_queue.append((device, task))
-        logging.info(f"任务 '{task[:30]}...' 已分配给设备 [{device}]")
+    # --- 核心改动：使用 Manager 来创建多进程共享的数据结构 ---
+    manager = multiprocessing.Manager()
 
-    # 5. 并行启动 Agent
-    processes = []
-    for device, task in work_queue:
-        process = multiprocessing.Process(
-            target=agent_worker,
-            args=(device, task),
-        )
-        processes.append(process)
-        process.start()
-        # 稍微错开启动时间，避免同时初始化造成日志混乱
+    # a. 共享的任务队列
+    task_queue = manager.Queue()
+    for task in tasks:
+        task_queue.put(task)
+
+    # b. 共享的设备状态字典，初始状态均为 'idle' (空闲)
+    device_status = manager.dict({device: "idle" for device in all_devices})
+
+    active_processes = {}
+
+    while not task_queue.empty() or any(
+        p.is_alive() for p in active_processes.values()
+    ):
+        # --- 步骤 1: 清理已结束的僵尸进程 ---
+        finished_devices = [
+            device
+            for device, process in active_processes.items()
+            if not process.is_alive()
+        ]
+        for device in finished_devices:
+            active_processes[device].join()  # 确保进程资源被回收
+            del active_processes[device]
+
+        # --- 步骤 2: 寻找空闲设备并分配新任务 ---
+        if not task_queue.empty():
+            for device_serial in all_devices:
+                # 如果设备状态为空闲，并且没有正在运行的进程，则分配任务
+                if (
+                    device_status.get(device_serial) == "idle"
+                    and device_serial not in active_processes
+                ):
+                    if task_queue.empty():
+                        break  # 如果在遍历设备时任务队列变空了，则跳出
+
+                    task_to_run = task_queue.get()
+
+                    logging.info(
+                        f"调度新任务: '{task_to_run[:50]}...' -> 分配给空闲设备 [{device_serial}]"
+                    )
+
+                    process = multiprocessing.Process(
+                        target=agent_process_wrapper,
+                        args=(device_serial, task_to_run, device_status),
+                    )
+                    process.start()
+                    active_processes[device_serial] = process
+
+        # 短暂休眠，避免CPU空转
         time.sleep(2)
 
-    # 6. 等待所有 Agent 进程完成
-    logging.info("所有Agent已启动，等待它们完成工作...")
-    for process in processes:
-        process.join()
-
-    logging.info("-" * 30)
-    logging.info("所有Agent均已完成其任务。程序退出。")
+    logging.info("-" * 40)
+    logging.info("所有任务均已执行完毕。调度器正常退出。")
 
 
 if __name__ == "__main__":
-    # 在Windows和macOS上，multiprocessing的默认启动方法可能不同
-    # 'fork' 是Linux上的默认值，通常更高效
-    # 'spawn' 在所有平台上都可用，更稳定但开销稍大
-    if os.name != "posix":
+    # 在非Linux系统上，'spawn' 启动方法更稳定
+    if platform.system() != "Linux":
         multiprocessing.set_start_method("spawn", force=True)
     main()
