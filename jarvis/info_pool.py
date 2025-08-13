@@ -78,11 +78,29 @@ class InfoPoolManager:
                 step_folder_name, "simplified_layout.txt"
             )
 
+        # 新增: 将完整的LLM对话保存到JSON文件
+        if "llm_prompt" in step_data and "raw_llm_response" in step_data:
+            dialogue_path = os.path.join(step_dir, "llm_dialogue.json")
+            dialogue_content = {
+                "prompt": step_data["llm_prompt"],
+                "response": step_data["raw_llm_response"],
+            }
+            with open(dialogue_path, "w", encoding="utf-8") as f:
+                json.dump(dialogue_content, f, indent=2, ensure_ascii=False)
+            trace_step_data["llm_dialogue_path"] = os.path.join(
+                step_folder_name, "llm_dialogue.json"
+            )
+
         # --- 清理原始数据，准备写入JSON ---
         step_data.pop("screenshot_bytes", None)
         step_data.pop("xml_content", None)
+        step_data.pop("llm_prompt", None)  # 从JSON中移除，因为它已经存为文件
+        step_data.pop("raw_llm_response", None)  # 从JSON中移除
+
         trace_step_data.pop("screenshot_bytes", None)
         trace_step_data.pop("xml_content", None)
+        trace_step_data.pop("llm_prompt", None)
+        trace_step_data.pop("raw_llm_response", None)
 
         # 保存该步骤的详细JSON
         step_details_path = os.path.join(step_dir, "step_details.json")
@@ -102,6 +120,7 @@ class InfoPoolManager:
         summary: str,
         run_start_time: datetime.datetime,  # 这个是带时区的时间
         task: str,
+        token_usage: dict = None,  # 新增: 接收token使用情况
     ):
         """
         在任务结束时写入总结文件和完整的执行轨迹文件。
@@ -120,6 +139,13 @@ class InfoPoolManager:
             "final_status": status,
             "total_steps": self.step_count,
             "summary_text": summary,
+            # 新增: 将token使用情况添加到总结中
+            "token_usage": token_usage
+            or {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+            },
         }
         summary_path = os.path.join(self.run_dir, "summary.json")
         try:

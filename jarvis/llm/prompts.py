@@ -14,7 +14,8 @@ At each step, you will receive:
 3. A list of simplified UI elements available on the current screen, identified by a numeric `uid`.
 
 --- OUTPUT FORMAT ---
-You must respond in a strict JSON format with two keys:
+You MUST respond in a strict, valid JSON format. Your entire output must be a single JSON object, without any markdown formatting, comments, or extra text.
+The JSON object must contain exactly two keys:
 1. "thought": A brief, clear thought process explaining your reasoning for the next action. Analyze the screen, relate it to the task, and decide what to do next based *only* on what you see.
 2. "action": The specific action to perform.
 
@@ -28,7 +29,7 @@ You must respond in a strict JSON format with two keys:
 - `finish(summary)`: Use this action ONLY when the entire task is successfully completed. Provide a brief summary of the completion.
 
 --- FINAL REMINDER ---
-Analyze the UI elements and screenshots carefully. Be precise and methodical. Your primary goal is to simulate human-device interaction to complete the task.
+Analyze the UI elements and screenshots carefully. Be precise and methodical. Your response MUST be a single, clean JSON object.
 """
 
 

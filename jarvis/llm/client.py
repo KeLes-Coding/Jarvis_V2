@@ -2,7 +2,8 @@ import base64
 import logging
 import os
 import json
-from typing import List, Dict, Any
+import re
+from typing import List, Dict, Any, Tuple
 
 # 动态导入
 try:
@@ -24,6 +25,19 @@ except ImportError:
 from . import prompts
 
 
+def _fix_json_string(json_string: str) -> str:
+    """
+    尝试修复可能包含前后缀或 markdown 标记的不规范JSON字符串。
+    例如, ` ```json\n{"key": "value"}\n``` `
+    """
+    # 查找被 ` ``` ` 包围的JSON块
+    match = re.search(r"```(json)?\s*(\{.*?\})\s*```", json_string, re.DOTALL)
+    if match:
+        return match.group(2)
+    # 如果没有找到，就假设整个字符串是JSON，只是可能前后有空格
+    return json_string.strip()
+
+
 class LLMClient:
     """
     LLMClient负责与不同的大型语言模型服务进行交互。
@@ -34,6 +48,7 @@ class LLMClient:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.config = config
         self.api_mode = config.get("api_mode", "openai")
+        self.fix_json_enabled = config.get("fix_json_enabled", True)
 
         provider_config = config.get("providers", {}).get(self.api_mode, {})
         self.model = provider_config.get("model")
@@ -42,7 +57,10 @@ class LLMClient:
         # 处理代理配置
         self.proxies = None
         if proxy_config and proxy_config.get("enabled", False):
-            server = proxy_config.get("server") or "http://127.0.0.1:7890"
+            server = (
+                proxy_config.get("server")
+                or "[http://127.0.0.1:7890](http://127.0.0.1:7890)"
+            )
             self.proxies = {"http://": server, "https://": server}
             self.logger.info(f"Using proxy server: {server}")
 
@@ -114,18 +132,27 @@ class LLMClient:
             }
         return {}
 
-    def query(self, text_prompt: str, images: List[bytes] = None) -> Dict[str, Any]:
+    def query(
+        self, text_prompt: str, images: List[bytes] = None
+    ) -> Tuple[Dict[str, Any], str, Dict[str, int]]:
         """
         向LLM发送查询请求。
         - 整合文本和图片（如果支持VLM）。
         - 调用相应SDK的API。
-        - 解析并返回LLM的响应。
+        - 解析并返回LLM的响应、原始响应和token使用情况。
         """
         self.logger.info("Querying LLM...")
         images = images or []
         content = [{"type": "text", "text": text_prompt}]
         for img_bytes in images:
             content.insert(0, self._prepare_image_payload(img_bytes))
+
+        token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        raw_response = ""
 
         try:
             if self.api_mode == "openai":
@@ -142,6 +169,11 @@ class LLMClient:
                     timeout=self.timeout,
                 )
                 raw_response = response.choices[0].message.content
+                if response.usage:
+                    token_usage["prompt_tokens"] = response.usage.prompt_tokens
+                    token_usage["completion_tokens"] = response.usage.completion_tokens
+                    token_usage["total_tokens"] = response.usage.total_tokens
+
             elif self.api_mode == "gemini":
                 generation_config = genai.types.GenerationConfig(
                     response_mime_type="application/json", temperature=0.1
@@ -153,6 +185,17 @@ class LLMClient:
                     request_options={"timeout": self.timeout},
                 )
                 raw_response = response.text
+                if response.usage_metadata:
+                    token_usage["prompt_tokens"] = (
+                        response.usage_metadata.prompt_token_count
+                    )
+                    token_usage["completion_tokens"] = (
+                        response.usage_metadata.candidates_token_count
+                    )
+                    token_usage["total_tokens"] = (
+                        response.usage_metadata.total_token_count
+                    )
+
             elif self.api_mode == "claude":
                 response = self.client.messages.create(
                     model=self.model,
@@ -163,17 +206,40 @@ class LLMClient:
                     timeout=self.timeout,
                 )
                 raw_response = response.content[0].text
+                if response.usage:
+                    token_usage["prompt_tokens"] = response.usage.input_tokens
+                    token_usage["completion_tokens"] = response.usage.output_tokens
+                    token_usage["total_tokens"] = (
+                        response.usage.input_tokens + response.usage.output_tokens
+                    )
             else:
                 raise ValueError(
                     f"Query method not implemented for API mode: {self.api_mode}"
                 )
 
             self.logger.info(f"LLM raw response: {raw_response}")
-            return json.loads(raw_response)
+
+            try:
+                # 第一次尝试直接解析
+                parsed_response = json.loads(raw_response)
+            except json.JSONDecodeError:
+                if self.fix_json_enabled:
+                    self.logger.warning("Failed to parse JSON, attempting to fix...")
+                    fixed_str = _fix_json_string(raw_response)
+                    parsed_response = json.loads(fixed_str)  # 再次尝试解析
+                else:
+                    raise  # 如果禁用修复，则直接抛出异常
+
+            return parsed_response, raw_response, token_usage
 
         except Exception as e:
-            self.logger.error(f"LLM API call failed: {e}", exc_info=True)
-            return {
-                "thought": "Error: API call failed.",
+            self.logger.error(
+                f"LLM API call or JSON parsing failed: {e}", exc_info=True
+            )
+            # 即使失败，也返回一个标准的错误结构体和空的token信息
+            error_response = {
+                "thought": "Error: API call or JSON processing failed.",
                 "action": f"error(details='{str(e)}')",
             }
+            # 返回错误、原始响应（如果有的话）和空的token
+            return error_response, raw_response, token_usage

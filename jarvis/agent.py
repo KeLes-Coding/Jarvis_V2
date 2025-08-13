@@ -60,18 +60,23 @@ class JarvisAgent:
             config=config.get("llm", {}), proxy_config=config.get("proxy", {})
         )
 
-        # 读取当前provider的is_vlm设置
+        agent_config = config.get("agent", {})
         llm_config = config.get("llm", {})
+
+        # 读取当前provider的is_vlm设置
         api_mode = llm_config.get("api_mode", "openai")
         self.is_vlm = (
             llm_config.get("providers", {}).get(api_mode, {}).get("is_vlm", False)
         )
         self.logger.info(f"VLM mode is {'ENABLED' if self.is_vlm else 'DISABLED'}.")
 
+        # 新增: 读取重试配置
+        retry_config = agent_config.get("retry_on_error", {})
+        self.retry_enabled = retry_config.get("enabled", True)
+        self.max_retries = retry_config.get("attempts", 3)
+
         # 读取压缩配置
-        self.compression_config = self.config.get("agent", {}).get(
-            "image_compression", {}
-        )
+        self.compression_config = agent_config.get("image_compression", {})
         if self.compression_config.get("enabled") and not Image:
             self.logger.error(
                 "Image compression is enabled, but Pillow is not installed. Please run 'pip install Pillow'. Disabling compression."
@@ -170,6 +175,13 @@ class JarvisAgent:
 
         prev_thought, prev_action, prev_screenshot_bytes = "", "", None
 
+        # 新增: 初始化token计数器
+        total_token_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+
         max_steps = self.config.get("agent", {}).get("max_steps", 15)
         self.logger.info(f"任务最大执行步数: {max_steps}")
 
@@ -182,49 +194,113 @@ class JarvisAgent:
             self.logger.info(f"--- 开始第 {i} 步 ---")
             step_start_time = time.time()
 
-            # 1. 观察
-            observation_data = self.observer.get_current_observation()
+            # --- 重试循环开始 ---
+            llm_response, raw_llm_response, step_tokens = None, None, None
+            observation_data = None
+            last_error = None
 
-            # 2. (可选) 压缩图片
-            current_screenshot_bytes = self._compress_image(
-                observation_data.get("screenshot_bytes")
-            )
+            # 根据配置决定实际的尝试次数
+            attempts = self.max_retries if self.retry_enabled else 1
+            for attempt in range(attempts):
+                try:
+                    # 1. 观察
+                    observation_data = self.observer.get_current_observation()
 
-            simplified_ui = observation_data.get("simplified_elements_str")
-            elements_list = observation_data.get("simplified_elements_list")
+                    # 2. (可选) 压缩图片
+                    current_screenshot_bytes = self._compress_image(
+                        observation_data.get("screenshot_bytes")
+                    )
 
-            if not current_screenshot_bytes or not simplified_ui:
+                    simplified_ui = observation_data.get("simplified_elements_str")
+
+                    if not current_screenshot_bytes or not simplified_ui:
+                        # 这是一个关键性失败，无法重试
+                        final_status, final_summary = (
+                            "CRITICAL_FAILURE",
+                            "Failed to get complete observation.",
+                        )
+                        self.logger.error(final_summary)
+                        # 跳出所有循环
+                        i = max_steps + 1
+                        break
+
+                    # 3. 思考 (准备并调用LLM)
+                    images_for_llm = []
+                    if self.is_vlm:
+                        if i == 1:
+                            images_for_llm.append(current_screenshot_bytes)
+                        else:
+                            if prev_screenshot_bytes:
+                                images_for_llm.append(prev_screenshot_bytes)
+                            images_for_llm.append(current_screenshot_bytes)
+                    else:
+                        self.logger.info(
+                            "VLM mode is disabled. Sending text-only prompt."
+                        )
+
+                    if (
+                        i == 1 and attempt == 0
+                    ):  # 只在第一步的第一次尝试时使用初始prompt
+                        prompt_text = prompts.get_step_1_prompt(task, simplified_ui)
+                    else:
+                        prompt_text = prompts.get_intermediate_prompt(
+                            task, prev_thought, prev_action, simplified_ui
+                        )
+
+                    # 调用LLM
+                    llm_response, raw_llm_response, step_tokens = self.llm_client.query(
+                        prompt_text, images=images_for_llm
+                    )
+
+                    # 验证响应格式
+                    thought = llm_response.get("thought")
+                    action_str = llm_response.get("action")
+                    if thought is None or action_str is None:
+                        # 即使API调用成功，如果内容不符合我们的格式要求，也视为错误
+                        raise AttributeError(
+                            f"LLM response missing 'thought' or 'action' key. Response: {llm_response}"
+                        )
+
+                    # 成功获取并验证了响应，跳出重试循环
+                    last_error = None
+                    break
+
+                except (AttributeError, json.JSONDecodeError, TypeError) as e:
+                    last_error = e
+                    self.logger.warning(
+                        f"步骤 {i} 尝试 {attempt + 1}/{attempts} 失败: {e}. 正在重试..."
+                    )
+                    time.sleep(2)  # 等待2秒后重试
+
+            # 如果所有重试都失败了
+            if last_error:
                 final_status, final_summary = (
                     "CRITICAL_FAILURE",
-                    "Failed to get complete observation.",
+                    f"Failed after {attempts} attempts. Last error: {last_error}",
                 )
                 self.logger.error(final_summary)
+                break  # 终止主循环
+
+            if i > max_steps:  # 检查是否是因为观察失败而跳出
                 break
 
-            # 3. 思考 (准备并调用LLM)
-            images_for_llm = []
-            if self.is_vlm:
-                if i == 1:
-                    images_for_llm.append(current_screenshot_bytes)
-                else:
-                    if prev_screenshot_bytes:
-                        images_for_llm.append(prev_screenshot_bytes)
-                    images_for_llm.append(current_screenshot_bytes)
-            else:
-                self.logger.info("VLM mode is disabled. Sending text-only prompt.")
+            # --- 重试循环结束 ---
 
-            if i == 1:
-                prompt_text = prompts.get_step_1_prompt(task, simplified_ui)
-            else:
-                prompt_text = prompts.get_intermediate_prompt(
-                    task, prev_thought, prev_action, simplified_ui
+            # 累加token
+            if step_tokens:
+                total_token_usage["prompt_tokens"] += step_tokens.get(
+                    "prompt_tokens", 0
                 )
+                total_token_usage["completion_tokens"] += step_tokens.get(
+                    "completion_tokens", 0
+                )
+                total_token_usage["total_tokens"] += step_tokens.get("total_tokens", 0)
 
-            llm_response = self.llm_client.query(prompt_text, images=images_for_llm)
             thought = llm_response.get("thought", "LLM did not provide a thought.")
             action_str = llm_response.get(
                 "action", "error(reason='No action returned')"
             )
+            elements_list = observation_data.get("simplified_elements_list")
 
             # 4. 行动
             self.logger.info(f"LLM Thought: {thought}")
@@ -251,7 +327,9 @@ class JarvisAgent:
                 "observation": {
                     "simplified_elements_str": simplified_ui,
                 },
-                "llm_response": llm_response,
+                "llm_prompt": prompt_text,  # 记录完整的prompt
+                "raw_llm_response": raw_llm_response,  # 记录原始回复
+                "llm_response": llm_response,  # 记录解析后的回复
                 "execution": {
                     "validated_action": action_str,
                     "status": execution_status,
@@ -278,6 +356,7 @@ class JarvisAgent:
             summary=final_summary,
             run_start_time=self.run_start_time,
             task=task,
+            token_usage=total_token_usage,  # 传递token信息
         )
 
 

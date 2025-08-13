@@ -1,3 +1,36 @@
+# ----------------- 主要调度配置 -----------------
+main:
+  # 在这里定义一个或多个需要执行的任务
+  tasks:
+    - "打开计算器，计算123乘以456，告诉我答案是多少"
+    - "打开维基百科，搜索周杰伦，告诉我他2000年发布的专辑是什么。"
+    # - "你的其他任务..."
+
+  # 设备配置
+  device_providers:
+    # a. 本机设备
+    local:
+      enabled: true
+
+    # b. 远程IP设备 (公网/内网IP直连)
+    remote_ip:
+      enabled: false
+      # 可以提供多个远程主机的地址 (IP:Port)
+      remotes:
+        - host: "192.168.1.100:5555"
+        # - host: "your_public_ip:5555"
+
+    # c. SSH反向隧道设备
+    #    服务器2通过反向SSH将自己的ADB端口暴露为服务器1的某个本地端口
+    ssh_reverse_tunnel:
+      enabled: false
+      # 列出所有已建立的隧道
+      ssh_reverse_tunnels:
+        # 示例：服务器2将自己的ADB服务(通常是localhost:5037)转发到了服务器1的5038端口
+        - local_port: 5038  # 服务器1上的本地端口
+        # 如果您建立了另一个隧道，例如将另一台机器的ADB转发到服务器1的5039端口
+        # - local_port: 5039
+
 # 安卓调试桥 (ADB) 相关配置
 adb:
   executable_path: "adb"
@@ -21,6 +54,13 @@ agent:
   # Agent执行任务的最大步骤数。超过此数值将自动停止。
   max_steps: 15
 
+  # 新增：错误重试配置
+  retry_on_error:
+    # 是否在遇到可恢复错误（如LLM输出格式问题）时启用重试
+    enabled: true
+    # 最大重试次数
+    attempts: 3
+
   # 图片压缩配置
   image_compression:
     # 是否启用截图压缩。 true: 启用, false: 关闭
@@ -36,7 +76,7 @@ llm:
   providers:
     openai:
       base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-      # !!! 在下方填入你的 API Key !!!
+      # 在下方填入 API Key
       api_key: ""
       model: "qwen3-coder-plus"
       timeout: 120
@@ -44,7 +84,7 @@ llm:
       is_vlm: true
 
     gemini:
-      # !!! 在下方填入你的 API Key !!!
+      # 在下方填入 API Key
       api_key: ""
       model: "gemini-1.5-pro-latest"
       timeout: 120
@@ -52,7 +92,7 @@ llm:
       is_vlm: true
 
     claude:
-      # !!! 在下方填入你的 API Key !!!
+      # 在下方填入 API Key
       api_key: ""
       model: "claude-3-opus-20240229"
       timeout: 120
