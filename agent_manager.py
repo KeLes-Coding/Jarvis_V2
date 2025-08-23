@@ -1,4 +1,4 @@
-# agent_manager.py (Refactored V3)
+# agent_manager.py (Refactored V3 - Restored Comments + V4 SSH Forward)
 
 import subprocess
 import multiprocessing
@@ -8,10 +8,15 @@ import yaml
 import logging
 import platform
 import sys
+
+import re
+import atexit
 from typing import List, Dict, Any
 
 # 导入现有的 agent_worker
 from jarvis.agent import agent_worker
+
+ssh_tunnel_processes = []
 
 # --- 全局基础日志配置 ---
 # 为管理器设置一个独特的日志格式，以便与Agent的日志区分开
@@ -20,6 +25,32 @@ logging.basicConfig(
     format="%(asctime)s - [Manager] - %(levelname)s - %(message)s",
     force=True,  # 强制覆盖任何现有配置
 )
+
+
+# --- 新增：程序退出时自动调用的清理函数 ---
+def cleanup_ssh_tunnels():
+    """
+    程序退出时自动调用的清理函数，用于终止所有后台SSH隧道进程。
+    """
+    logging.info("正在清理后台SSH隧道进程...")
+    for process in ssh_tunnel_processes:
+        if process.poll() is None:  # 进程仍在运行
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+                logging.info(f"已终止SSH隧道进程 (PID: {process.pid})")
+            except subprocess.TimeoutExpired:
+                process.kill()
+                logging.warning(
+                    f"强制终止SSH隧道进程 (PID: {process.pid})，因为它没有在5秒内响应"
+                )
+            except Exception as e:
+                logging.error(f"清理SSH隧道进程 (PID: {process.pid}) 时出错: {e}")
+    logging.info("SSH隧道清理完毕。")
+
+
+# --- 新增：注册清理函数 ---
+atexit.register(cleanup_ssh_tunnels)
 
 
 def run_adb_command(command: list[str], timeout: int = 20) -> str:
@@ -86,6 +117,94 @@ def get_available_devices(config: Dict[str, Any]) -> List[str]:
                     or "already connected" in connect_output
                 ):
                     all_devices.append(address)
+
+    # 4.SSH正向隧道设备
+    ssh_forward_config = provider_configs.get("ssh_forward_tunnel", {})
+    if ssh_forward_config.get("enabled"):
+        for conn in ssh_forward_config.get("ssh_connections", []):
+            user, host, port = conn["ssh_user"], conn["ssh_host"], conn["ssh_port"]
+            remote_adb = conn["remote_adb_path"]
+            local_port_counter = conn.get("local_start_port", 15555)
+
+            logging.info(f"正在通过SSH [{user}@{host}:{port}] 发现远程设备...")
+
+            ssh_cmd = [
+                "ssh",
+                f"{user}@{host}",
+                "-p",
+                str(port),
+                f"{remote_adb} devices",
+            ]
+            try:
+                remote_output = subprocess.check_output(ssh_cmd, text=True, timeout=30)
+            except Exception as e:
+                logging.error(f"通过SSH执行远程ADB命令失败: {e}")
+                continue
+
+            remote_devices = []
+            for line in remote_output.strip().split("\n")[1:]:
+                if "\tdevice" in line:
+                    serial = line.split("\t")[0]
+                    match = re.match(r"emulator-(\d+)", serial)
+                    if match:
+                        remote_port = int(match.group(1)) + 1
+                        remote_devices.append((serial, remote_port))
+                    elif ":" in serial:
+                        try:
+                            remote_port = int(serial.split(":")[-1])
+                            remote_devices.append((serial, remote_port))
+                        except ValueError:
+                            logging.warning(f"无法从远程设备 '{serial}' 解析端口。")
+
+            if not remote_devices:
+                logging.warning(f"在远程服务器 [{host}] 上未发现可用的安卓虚拟机。")
+                continue
+
+            for serial, remote_port in remote_devices:
+                local_port = local_port_counter
+                logging.info(f"为远程设备 '{serial}' (端口:{remote_port}) 建立隧道...")
+
+                tunnel_cmd = [
+                    "ssh",
+                    "-N",
+                    "-f",
+                    "-L",
+                    f"{local_port}:localhost:{remote_port}",
+                    f"{user}@{host}",
+                    "-p",
+                    str(port),
+                ]
+
+                try:
+                    # 使用 Popen 在后台启动，并将其添加到全局列表以便后续清理
+                    process = subprocess.Popen(tunnel_cmd)
+                    ssh_tunnel_processes.append(process)
+                    logging.info(
+                        f"已启动SSH隧道 (PID: {process.pid}): 本地端口 {local_port} -> 远程端口 {remote_port}"
+                    )
+                    time.sleep(2)
+                except Exception as e:
+                    logging.error(f"启动SSH隧道失败: {e}")
+                    continue
+
+                local_address = f"localhost:{local_port}"
+                connect_output = run_adb_command([adb_path, "connect", local_address])
+                if (
+                    "connected" in connect_output
+                    or "already connected" in connect_output
+                ):
+                    logging.info(
+                        f"成功通过隧道连接到设备: {local_address} (远程: {serial})"
+                    )
+                    all_devices.append(local_address)
+                else:
+                    logging.error(
+                        f"连接到 {local_address} 失败。请检查隧道或远程ADB服务。"
+                    )
+                    process.terminate()
+
+                local_port_counter += 1
+    # --- 新增逻辑结束 ---
 
     unique_devices = sorted(list(set(all_devices)))
     logging.info(f"发现 {len(unique_devices)} 台唯一可用设备: {unique_devices}")
@@ -163,48 +282,54 @@ def main():
 
     active_processes = {}
 
-    while not task_queue.empty() or any(
-        p.is_alive() for p in active_processes.values()
-    ):
-        # --- 步骤 1: 清理已结束的僵尸进程 ---
-        finished_devices = [
-            device
-            for device, process in active_processes.items()
-            if not process.is_alive()
-        ]
-        for device in finished_devices:
-            active_processes[device].join()  # 确保进程资源被回收
-            del active_processes[device]
+    try:
+        while not task_queue.empty() or any(
+            p.is_alive() for p in active_processes.values()
+        ):
+            # --- 步骤 1: 清理已结束的僵尸进程 ---
+            finished_devices = [
+                device
+                for device, process in active_processes.items()
+                if not process.is_alive()
+            ]
+            for device in finished_devices:
+                active_processes[device].join()  # 确保进程资源被回收
+                del active_processes[device]
 
-        # --- 步骤 2: 寻找空闲设备并分配新任务 ---
-        if not task_queue.empty():
-            for device_serial in all_devices:
-                # 如果设备状态为空闲，并且没有正在运行的进程，则分配任务
-                if (
-                    device_status.get(device_serial) == "idle"
-                    and device_serial not in active_processes
-                ):
-                    if task_queue.empty():
-                        break  # 如果在遍历设备时任务队列变空了，则跳出
+            # --- 步骤 2: 寻找空闲设备并分配新任务 ---
+            if not task_queue.empty():
+                for device_serial in all_devices:
+                    # 如果设备状态为空闲，并且没有正在运行的进程，则分配任务
+                    if (
+                        device_status.get(device_serial) == "idle"
+                        and device_serial not in active_processes
+                    ):
+                        if task_queue.empty():
+                            break  # 如果在遍历设备时任务队列变空了，则跳出
 
-                    task_to_run = task_queue.get()
+                        task_to_run = task_queue.get()
 
-                    logging.info(
-                        f"调度新任务: '{task_to_run[:50]}...' -> 分配给空闲设备 [{device_serial}]"
-                    )
+                        logging.info(
+                            f"调度新任务: '{task_to_run[:50]}...' -> 分配给空闲设备 [{device_serial}]"
+                        )
 
-                    process = multiprocessing.Process(
-                        target=agent_process_wrapper,
-                        args=(device_serial, task_to_run, device_status),
-                    )
-                    process.start()
-                    active_processes[device_serial] = process
+                        process = multiprocessing.Process(
+                            target=agent_process_wrapper,
+                            args=(device_serial, task_to_run, device_status),
+                        )
+                        process.start()
+                        active_processes[device_serial] = process
 
-        # 短暂休眠，避免CPU空转
-        time.sleep(2)
+            # 短暂休眠，避免CPU空转
+            time.sleep(2)
 
-    logging.info("-" * 40)
-    logging.info("所有任务均已执行完毕。调度器正常退出。")
+    except KeyboardInterrupt:
+        logging.info("捕获到用户中断信号 (Ctrl+C)，将开始清理...")
+
+    finally:
+        # atexit 会在这里自动处理SSH隧道的清理
+        logging.info("-" * 40)
+        logging.info("所有任务均已执行完毕或程序已中断。调度器正在退出。")
 
 
 if __name__ == "__main__":

@@ -31,6 +31,20 @@ main:
         # 如果您建立了另一个隧道，例如将另一台机器的ADB转发到服务器1的5039端口
         # - local_port: 5039
 
+    ssh_forward_tunnel:
+      enabled: false
+      # 可配置多个SSH服务器
+      ssh_connections:
+        - ssh_user: ""
+          ssh_host: ""
+          ssh_port: 
+          # 重要：请在此处填写您服务器上adb命令的绝对路径
+          # 如果不确定，可以在服务器上执行 `which adb` 来查找
+          remote_adb_path: "" # 示例路径，请务必修改为您的真实路径
+          # 本地起始端口，程序将从此端口开始为远程虚拟机建立映射
+          # 例如，第一个虚拟机会被映射到 15555，第二个到 15556，以此类推
+          local_start_port: 
+
 # 安卓调试桥 (ADB) 相关配置
 adb:
   executable_path: "adb"

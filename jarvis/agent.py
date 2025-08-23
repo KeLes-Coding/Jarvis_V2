@@ -5,6 +5,7 @@ import time
 import os
 import json
 import io  # 用于处理二进制数据流
+import re  # 导入re模块用于字符替换
 
 # 新增：从datetime模块导入timezone和timedelta以处理时区
 from datetime import timezone, timedelta
@@ -373,8 +374,12 @@ def agent_worker(device_serial: str, task: str):
     # 1. 生成本次运行的唯一目录
     safe_task_name = "".join(c for c in task if c.isalnum() or c in " _-").rstrip()[:50]
     timestamp = run_start_time.strftime("%Y%m%d_%H%M%S")  # 使用带时区的时间
+
+    # --- 关键修改：替换device_serial中的非法字符 ---
+    safe_device_serial = re.sub(r"[:\\/]", "_", device_serial)
+
     run_path = os.path.join(
-        "jarvis", "runs", f"{timestamp}_{safe_task_name}_{device_serial}"
+        "jarvis", "runs", f"{timestamp}_{safe_task_name}_{safe_device_serial}"
     )
     os.makedirs(run_path, exist_ok=True)
 
