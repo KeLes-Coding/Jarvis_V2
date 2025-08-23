@@ -17,7 +17,7 @@ main:
       enabled: false
       # 可以提供多个远程主机的地址 (IP:Port)
       remotes:
-        - host: "192.168.1.100:5555"
+        - host: ""
         # - host: "your_public_ip:5555"
 
     # c. SSH反向隧道设备
