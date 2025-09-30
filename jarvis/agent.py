@@ -335,6 +335,7 @@ class JarvisAgent:
                     "validated_action": action_str,
                     "status": execution_status,
                 },
+                "token_usage": step_tokens,
                 "cycle_duration_ms": int((time.time() - step_start_time) * 1000),
                 "screenshot_bytes": current_screenshot_bytes,
                 "xml_content": observation_data.get("xml_content"),
